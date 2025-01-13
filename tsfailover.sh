@@ -99,6 +99,7 @@ fi
 
 
 #<====== Main program ======>
+echo "<====== $(date) ======>"
 test_icmp $inettestip
 check_current_exit_node
 
@@ -133,3 +134,4 @@ elif [ $icmp == false ] && [ $curexitnode != false ]; then
 elif [ $icmp == true ] && [ $curexitnode == false ]; then
 	echo "Internet is working without an exit node."
 fi
+echo "<======  ======>"
