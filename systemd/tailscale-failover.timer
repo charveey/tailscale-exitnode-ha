@@ -1,0 +1,16 @@
+[Unit]
+Description=Run Tailscale Exit Node Failover Check
+After=network-online.target
+
+[Timer]
+# Wait 60 seconds after boot before first run
+OnBootSec=60
+
+# Run every 30 seconds after the previous run completes
+OnUnitActiveSec=30
+
+# Timer accuracy (reduce wake-ups for power saving)
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

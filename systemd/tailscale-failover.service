@@ -1,0 +1,18 @@
+[Unit]
+Description=Tailscale Exit Node Failover
+After=network-online.target tailscaled.service wg-quick@wg-exit.service
+Wants=network-online.target
+Requires=tailscaled.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/tailscale-failover.sh
+StandardOutput=journal
+StandardError=journal
+
+# Restart on failure
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

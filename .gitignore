@@ -1,0 +1,25 @@
+# WireGuard private keys
+*.key
+*-private.key
+
+# Logs
+*.log
+/var/log/
+
+# Temporary files
+*.tmp
+*.swp
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+.vscode/
+.idea/
+.zed/
+*.sublime-*
+
+# Test outputs
+/tests/output/
