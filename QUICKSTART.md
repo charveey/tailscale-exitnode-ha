@@ -20,7 +20,7 @@ sudo apt update
 sudo apt install -y git curl
 
 # Clone this repository
-git clone https://github.com/yourusername/tailscale-ha-exit-node.git
+git clone https://github.com/charveey/tailscale-exitnode-ha.git
 cd tailscale-ha-exit-node
 ```
 
@@ -192,8 +192,8 @@ tail -50 /var/log/tailscale-failover.log
 ## Need Help?
 
 - 📖 [Full Documentation](README.md)
-- 🐛 [Report Issues](https://github.com/yourusername/tailscale-ha-exit-node/issues)
-- 💬 [Discussions](https://github.com/yourusername/tailscale-ha-exit-node/discussions)
+- 🐛 [Report Issues](https://github.com/charveey/tailscale-exitnode-ha/issues)
+- 💬 [Discussions](https://github.com/charveey/tailscale-exitnode-ha/discussions)
 
 ---
 

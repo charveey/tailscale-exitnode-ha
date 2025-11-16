@@ -1,8 +1,8 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Tailscale](https://img.shields.io/badge/Tailscale-Compatible-blue)](https://tailscale.com)
 [![WireGuard](https://img.shields.io/badge/WireGuard-Compatible-green)](https://wireguard.com)
-[![GitHub stars](https://img.shields.io/github/stars/yourusername/tailscale-ha-exit-node)](https://github.com/yourusername/tailscale-ha-exit-node/stargazers)
-[![GitHub issues](https://img.shields.io/github/issues/yourusername/tailscale-ha-exit-node)](https://github.com/yourusername/tailscale-ha-exit-node/issues)
+[![GitHub stars](https://img.shields.io/github/stars/yourusername/tailscale-ha-exit-node)](https://github.com/charveey/tailscale-exitnode-ha/stargazers)
+[![GitHub issues](https://img.shields.io/github/issues/yourusername/tailscale-ha-exit-node)](https://github.com/charveey/tailscale-exitnode-ha/issues)
 
 # Tailscale HA Transparent Exit Node Switcher
 
@@ -83,7 +83,7 @@ This solution creates a **transparent proxy architecture** where:
 ### Step 1: Clone the Repository
 
 ```bash
-git clone https://github.com/yourusername/tailscale-ha-exit-node.git
+git clone github.com/charveey/tailscale-exitnode-ha.git
 cd tailscale-ha-exit-node
 ```
 
@@ -372,9 +372,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Support
 
-- **Issues**: [GitHub Issues](https://github.com/yourusername/tailscale-ha-exit-node/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/yourusername/tailscale-ha-exit-node/discussions)
-- 📧 **Email**: your.email@example.com
+- **Issues**: [GitHub Issues](https://github.com/charveey/tailscale-exitnode-ha/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/charveey/tailscale-exitnode-ha/discussions)
 
 ## Roadmap
 
