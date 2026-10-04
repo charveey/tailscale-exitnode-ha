@@ -18,7 +18,7 @@ set -u
 inettestip=8.8.8.8
 
 # "local" = Akwaba itself; everything else is a Tailscale exit-node IP/name.
-exitnodes=("local" "100.95.202.15")
+exitnodes=("local" "100.85.214.5" "100.95.202.15")
 
 # If false, keep the last working upstream when all candidates fail.
 # If true, fall back to Akwaba local Internet when all Tailscale candidates fail.
