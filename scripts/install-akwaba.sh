@@ -16,10 +16,25 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
+# Detect Akwaba's normal Internet/WAN interface for the local-egress path.
+WAN_IFACE=$(ip route show default | awk 'NR==1 {print $5}')
+if [ -z "$WAN_IFACE" ]; then
+    echo "❌ Could not detect Akwaba's default WAN interface"
+    exit 1
+fi
+echo "Detected WAN interface: $WAN_IFACE"
+echo ""
+
 # Install dependencies
 echo "Installing dependencies..."
 apt update
 apt install -y wireguard wireguard-tools iptables net-tools jq curl
+# Enable IPv4 forwarding persistently. Akwaba forwards Oracle client traffic
+# either to a remote Tailscale exit node or directly to its own WAN.
+cat > /etc/sysctl.d/99-akwaba-router.conf << 'EOF_SYSCTL'
+net.ipv4.ip_forward=1
+EOF_SYSCTL
+sysctl --system >/dev/null
 
 # Check if Tailscale is installed
 if ! command -v tailscale &> /dev/null; then
@@ -71,23 +86,9 @@ ListenPort = 51820
 MTU = 1340
 Table = off
 
-PostUp = iptables -t nat -A POSTROUTING -o tailscale0 -j MASQUERADE
-PostUp = iptables -A FORWARD -i wg-exit -o tailscale0 -j ACCEPT
-PostUp = iptables -A FORWARD -i tailscale0 -o wg-exit -j ACCEPT
-PostUp = iptables -A INPUT -i wg-exit -j ACCEPT
-PostUp = iptables -A OUTPUT -o wg-exit -j ACCEPT
-PostUp = sysctl -w net.ipv4.ip_forward=1
+PostUp = iptables -t nat -A POSTROUTING -o tailscale0 -j MASQUERADE; iptables -t nat -A POSTROUTING -o $WAN_IFACE -j MASQUERADE; iptables -A FORWARD -i wg-exit -o tailscale0 -j ACCEPT; iptables -A FORWARD -i tailscale0 -o wg-exit -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT; iptables -A FORWARD -i wg-exit -o $WAN_IFACE -j ACCEPT; iptables -A FORWARD -i $WAN_IFACE -o wg-exit -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT; iptables -A INPUT -i wg-exit -j ACCEPT; iptables -A OUTPUT -o wg-exit -j ACCEPT; sysctl -w net.ipv4.ip_forward=1
 
-PostDown = iptables -t nat -D POSTROUTING -o tailscale0 -j MASQUERADE
-PostDown = iptables -D FORWARD -i wg-exit -o tailscale0 -j ACCEPT
-PostDown = iptables -D FORWARD -i tailscale0 -o wg-exit -j ACCEPT
-PostDown = iptables -D INPUT -i wg-exit -j ACCEPT
-PostDown = iptables -D OUTPUT -o wg-exit -j ACCEPT
-
-[Peer]
-PublicKey = $ORACLE_PUBLIC
-AllowedIPs = 172.16.99.1/32, 100.64.0.0/10
-PersistentKeepalive = 25
+PostDown = iptables -t nat -D POSTROUTING -o tailscale0 -j MASQUERADE; iptables -t nat -D POSTROUTING -o $WAN_IFACE -j MASQUERADE; iptables -D FORWARD -i wg-exit -o tailscale0 -j ACCEPT; iptables -D FORWARD -i tailscale0 -o wg-exit -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT; iptables -D FORWARD -i wg-exit -o $WAN_IFACE -j ACCEPT; iptables -D FORWARD -i $WAN_IFACE -o wg-exit -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT; iptables -D INPUT -i wg-exit -j ACCEPT; iptables -D OUTPUT -o wg-exit -j ACCEPT
 EOF
 
 chmod 600 /etc/wireguard/wg-exit.conf
@@ -112,17 +113,20 @@ else
     exit 1
 fi
 
-# Get exit node IPs
+# Configure upstream exit nodes
 echo ""
-echo "Now let's configure your exit nodes."
-echo "Enter the Tailscale IPs of your exit nodes in priority order."
+echo "Configuring Akwaba's transparent egress failover..."
+echo "Akwaba itself is the first/primary egress."
+echo "Enter remote Tailscale exit-node IPs (for example Stray) in priority order."
 echo "Press Enter with empty input when done."
 echo ""
 
-EXIT_NODES=()
+# "local" means Akwaba's own WAN/default route.
+# It is intentionally not passed to `tailscale --exit-node`.
+EXIT_NODES=("local")
 INDEX=1
 while true; do
-    read -p "Exit node #$INDEX (or press Enter to finish): " EXIT_NODE
+    read -p "Remote exit node #$INDEX (or press Enter to finish): " EXIT_NODE
     if [ -z "$EXIT_NODE" ]; then
         break
     fi
@@ -130,23 +134,235 @@ while true; do
     ((INDEX++))
 done
 
-if [ ${#EXIT_NODES[@]} -eq 0 ]; then
-    echo "⚠ No exit nodes configured. You'll need to edit the failover script manually."
-    EXIT_NODES_STR='("100.85.214.5")'
-else
-    # Format as bash array
-    EXIT_NODES_STR="("
-    for node in "${EXIT_NODES[@]}"; do
-        EXIT_NODES_STR+="\"$node\" "
-    done
-    EXIT_NODES_STR="${EXIT_NODES_STR% })"
-fi
+EXIT_NODES_STR="("
+for node in "${EXIT_NODES[@]}"; do
+    EXIT_NODES_STR+="\"$node\" "
+done
+EXIT_NODES_STR="${EXIT_NODES_STR% })"
+
+echo ""
+echo "Egress priority:"
+for node in "${EXIT_NODES[@]}"; do
+    if [ "$node" = "local" ]; then
+        echo "  - local (Akwaba WAN)"
+    else
+        echo "  - $node (remote Tailscale exit node)"
+    fi
+done
 
 # Install failover script
 echo ""
 echo "Installing failover script..."
 
 cat > /usr/local/bin/tailscale-failover.sh << 'EOFSCRIPT'
+#!/bin/bash
+
+# Akwaba is the client-facing director behind Oracle.
+# "local" is Akwaba's own WAN egress. Any other entry is a
+# Tailscale exit node used upstream.
+###########################################################
+inettestip=8.8.8.8
+exitnodes=EXIT_NODES_PLACEHOLDER
+failopen=false
+flags="--accept-routes"
+logfile="/var/log/tailscale-failover.log"
+############################################################
+
+exec > >(tee -a "$logfile")
+exec 2>&1
+
+function use_local_egress () {
+    echo "Using Akwaba local WAN egress (clearing upstream Tailscale exit node)..."
+    sudo tailscale up --exit-node="" --exit-node-allow-lan-access $flags
+}
+
+function restore_egress () {
+    local node=$1
+    if [ "$node" == "local" ] || [ "$node" == "false" ]; then
+        use_local_egress
+    else
+        sudo tailscale up --exit-node="$node" --exit-node-allow-lan-access $flags >/dev/null 2>&1
+    fi
+}
+
+function set_exit_node () {
+    check_current_exit_node
+
+    if [ "$1" == "false" ]; then
+        if [ "$failopen" == "true" ]; then
+            use_local_egress
+            sleep 2
+            test_icmp $inettestip
+        else
+            echo "There are no working egress nodes and failopen is false; keeping current egress $curexitnode."
+        fi
+        return 0
+    fi
+
+    if [ "$curexitnode" == "$1" ]; then
+        echo "Already using desired egress $curexitnode."
+        return 0
+    fi
+
+    echo "Setting egress to $1..."
+    if [ "$1" == "local" ]; then
+        use_local_egress
+    else
+        sudo tailscale up --exit-node="$1" --exit-node-allow-lan-access $flags
+    fi
+
+    sleep 3
+    check_current_exit_node
+
+    if [ "$curexitnode" == "$1" ]; then
+        echo "Current egress successfully changed to $curexitnode."
+        test_icmp $inettestip
+        if $icmp; then
+            echo "✓ ICMP to $inettestip is working via egress $curexitnode."
+            return 0
+        fi
+        echo "✗ ERROR: ICMP to $inettestip is failing via egress $curexitnode."
+        return 1
+    fi
+
+    echo "✗ ERROR: Unable to change egress. Current egress is $curexitnode (wanted $1)."
+    return 1
+}
+
+function test_icmp () {
+    local test_ip=$1
+    local ping_output
+    local count
+    ping_output=$(mktemp)
+    ping "$test_ip" -c 4 -W 2 > "$ping_output" 2>&1
+    count=$(grep "bytes from $test_ip" "$ping_output" | wc -l)
+    if [ "$count" -gt 0 ]; then
+        echo "  → $test_ip is ICMP reachable ($count/4 packets received)."
+        icmp=true
+    else
+        echo "  → $test_ip is ICMP unreachable."
+        icmp=false
+    fi
+    rm -f "$ping_output"
+}
+
+function check_exit_node () {
+    local node=$1
+    local original_exit=$curexitnode
+
+    echo "Checking egress $node..."
+
+    if [ "$node" == "local" ]; then
+        use_local_egress >/dev/null 2>&1
+    else
+        sudo tailscale up --exit-node="$node" --exit-node-allow-lan-access $flags >/dev/null 2>&1
+    fi
+
+    sleep 3
+    test_icmp $inettestip
+
+    if $icmp; then
+        echo "  → $node is working properly."
+        goodenode=true
+    else
+        echo "  → $node is not working."
+        goodenode=false
+        if [ "$original_exit" != "false" ] && [ "$original_exit" != "$node" ]; then
+            restore_egress "$original_exit"
+        fi
+    fi
+}
+
+function check_current_exit_node () {
+    curexitnode="local"
+
+    if command -v jq &> /dev/null; then
+        local status_json
+        status_json=$(tailscale status --json 2>/dev/null)
+        if [ -n "$status_json" ]; then
+            local json_exit
+            json_exit=$(echo "$status_json" | jq -r '.ExitNodeStatus.TailscaleIPs[0] // empty' 2>/dev/null)
+            if [ -n "$json_exit" ] && [ "$json_exit" != "null" ]; then
+                curexitnode="$json_exit"
+                return
+            fi
+        fi
+    fi
+
+    local status_line
+    status_line=$(tailscale status 2>/dev/null | grep "; exit node" | head -1 || true)
+    if [ -n "$status_line" ]; then
+        local detected
+        detected=$(echo "$status_line" | grep -oE "([0-9]{1,3}\.){3}[0-9]{1,3}" | head -1 || true)
+        if [ -n "$detected" ]; then
+            curexitnode="$detected"
+        fi
+    fi
+}
+
+function find_best_exit_node () {
+    bestexitnode="false"
+
+    for node in "${exitnodes[@]}"; do
+        check_exit_node "$node"
+        if $goodenode; then
+            echo "✓ Best egress is $node."
+            bestexitnode=$node
+            break
+        else
+            echo "✗ $node is offline or not working."
+        fi
+    done
+
+    if [ "$bestexitnode" == "false" ]; then
+        echo "⚠ WARNING: No egress candidates are currently working!"
+    fi
+}
+
+echo ""
+echo "=============================="
+echo "$(date '+%Y-%m-%d %H:%M:%S')"
+echo "=============================="
+
+test_icmp $inettestip
+check_current_exit_node
+
+if $icmp; then
+    echo "✓ Internet is up using egress $curexitnode."
+    if [ "$curexitnode" == "${exitnodes[0]}" ]; then
+        echo "✓ Using primary egress. All good."
+    else
+        echo "⚠ Not using primary egress. Checking if a higher-priority egress is available..."
+        find_best_exit_node
+        if [ "$bestexitnode" != "$curexitnode" ] && [ "$bestexitnode" != "false" ]; then
+            echo "→ Switching to better egress: $bestexitnode"
+            set_exit_node "$bestexitnode"
+        fi
+    fi
+else
+    echo "✗ Internet is down using egress $curexitnode. Looking for alternatives..."
+    find_best_exit_node
+    if [ "$bestexitnode" != "false" ]; then
+        set_exit_node "$bestexitnode"
+    else
+        echo "⚠ All egress candidates failed. Keeping current configuration."
+    fi
+fi
+
+echo ""
+echo "--- Final Status ---"
+check_current_exit_node
+test_icmp $inettestip
+
+if $icmp; then
+    echo "✓ System operational: Using egress $curexitnode"
+else
+    echo "✗ Internet check failed using egress $curexitnode"
+fi
+
+echo "=============================="
+echo ""
+'
 #!/bin/bash
 
 # Edit These Variables
